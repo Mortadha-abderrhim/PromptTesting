@@ -1,37 +1,33 @@
 import streamlit as st
 import os
 import requests
-import csv
 import random
-import io
-import csv
 from streamlit_gsheets import GSheetsConnection
 import pandas as pd
-conn = st.connection("gsheets", type=GSheetsConnection)
-API_KEY = os.environ.get("API_KEY")
 import json
 import re
 
 conn = st.connection("gsheets", type=GSheetsConnection)
+API_KEY = os.environ.get("API_KEY")
 
 st.set_page_config(layout="wide", page_title="Compare LLM Pipelines")
 
 goals = {
-    "Narrative":"""
+    "Narrative": """
         Write narratives to develop real or imagined experiences or events using effective technique, descriptive details, and clear event sequences.
             Orient the reader by establishing a situation and introducing a narrator and/or characters; organize an event sequence that unfolds naturally.
             Use dialogue and description to develop experiences and events or show the responses of characters to situations.
             Use a variety of transitional words and phrases to manage the sequence of events.
             Use concrete words and phrases and sensory details to convey experiences and events precisely.
             Provide a conclusion that follows from the narrated experiences or events.""",
-    "Descriptive":"""
+    "Descriptive": """
     Write informative/explanatory texts to examine a topic and convey ideas and information clearly.
         Introduce a topic clearly and group related information in paragraphs and sections; include formatting (e.g., headings).
         Develop the topic with facts, definitions, concrete details, quotations, or other information and examples related to the topic.
         Link ideas within categories of information using words and phrases (e.g., another, for example, also, because).
         Use precise language and domain-specific vocabulary to inform about or explain the topic.
         Provide a concluding statement or section related to the information or explanation presented.""",
-    "Argumentative":"""
+    "Argumentative": """
     Write opinion pieces on topics or texts, supporting a point of view with reasons and information.
         Introduce a topic or text clearly, state an opinion, and create an organizational structure in which related ideas are grouped to support the writer's purpose.
         Provide reasons that are supported by facts and details. For each reason, the student need to first introduce the argument; second develop and explain it; third prove it by providing examples, facts, and details; finally provide a conclusion for this reason.
@@ -44,63 +40,89 @@ goals = {
 with open("LEGACY_PROMPT.md", "r", encoding="utf-8") as file:
     LEGACY = file.read()
 
-with open("NEW_PROMPT.md","r", encoding="utf-8") as file:
+with open("NEW_PROMPT.md", "r", encoding="utf-8") as file:
     NEW = file.read()
 
-with open("FEEDBACK_PROMPT.md","r", encoding="utf-8") as file:
+with open("FEEDBACK_PROMPT.md", "r", encoding="utf-8") as file:
     FEEDBACK = file.read()
 
 LOG_CSV = "logs.csv"
 
-def response(system,history,formatted_input):
-    
-    url = 'https://hctlsrvb.edu.sot.tum.de/llm//v1/chat/completions'
+
+def response(system, history, formatted_input):
+    url = "https://hctlsrvb.edu.sot.tum.de/llm//v1/chat/completions"
     headers = {
-    'Authorization': f'Bearer {API_KEY}',
-    'Content-Type': 'application/json'
+        "Authorization": f"Bearer {API_KEY}",
+        "Content-Type": "application/json",
     }
     data = {
-    "model": "gpt-oss-120b",
-    "messages":[{"role": "system", "content": system}]+ history + [{"role":"user", "content":formatted_input}],
-    "stream": False
+        "model": "gpt-oss-120b",
+        "messages": [{"role": "system", "content": system}]
+        + history
+        + [{"role": "user", "content": formatted_input}],
+        "stream": False,
     }
     response = requests.post(url, headers=headers, json=data)
     return response.json()["choices"][0]["message"]["content"]
 
+
 def format_input(topic: str, essay: str, prompt: str) -> str:
     return f"<topic>{topic}</topic>\n<essay>{essay}</essay>\n<prompt>{prompt}</prompt>"
 
-def format_system_prompt(legacy, new, language,writing_type):
-    legacy = legacy.replace("{language}",language)
-    new = new.replace("{language}",language).replace("{type}",writing_type).replace("{structure}",goals[writing_type])
-    return legacy,new
+
+def format_feedback_input(topic: str, essay: str) -> str:
+    return f"<topic>{topic}</topic>\n<essay>\n{essay}\n</essay>"
+
+
+def format_system_prompt(legacy, new, language, writing_type):
+    legacy = legacy.replace("{language}", language)
+    new = (
+        new.replace("{language}", language)
+        .replace("{type}", writing_type)
+        .replace("{structure}", goals[writing_type])
+    )
+    return legacy, new
+
 
 def extract_tagged_part(text: str, tag: str) -> str:
-    """Extract content from <tag>...</tag>. Return empty string when absent."""
-    match = re.search(rf"<{tag}\s*>(.*?)</{tag}>", text or "", flags=re.DOTALL | re.IGNORECASE)
+    match = re.search(
+        rf"<{tag}\s*>(.*?)</{tag}>",
+        text or "",
+        flags=re.DOTALL | re.IGNORECASE,
+    )
     return match.group(1).strip() if match else ""
 
 
 def extract_think_output(response_text: str) -> tuple[str, str]:
-    """Parse LLM responses that contain <think> and <output> sections."""
-    think = extract_tagged_part(response_text, "think")
+    thinking = extract_tagged_part(response_text, "think")
     output = extract_tagged_part(response_text, "output")
 
-    # Fallbacks for older prompts that used <pedagogy> or returned only plain text.
-    if not think:
-        think = extract_tagged_part(response_text, "pedagogy")
+    # Fallback for older prompts that used <pedagogy>.
+    if not thinking:
+        thinking = extract_tagged_part(response_text, "pedagogy")
+
+    # Fallback if the model returns only plain text or malformed tags.
     if not output:
         output = response_text or ""
-        output = re.sub(r"<think\s*>.*?</think>", "", output, flags=re.DOTALL | re.IGNORECASE)
-        output = re.sub(r"<pedagogy\s*>.*?</pedagogy>", "", output, flags=re.DOTALL | re.IGNORECASE)
+        output = re.sub(
+            r"<think\s*>.*?</think>",
+            "",
+            output,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+        output = re.sub(
+            r"<pedagogy\s*>.*?</pedagogy>",
+            "",
+            output,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
         output = output.replace("<output>", "").replace("</output>", "").strip()
 
-    return think, output
+    return thinking, output
 
 
-def extract_output(response):
-    # Kept for the comparison pipelines, but now handles <think>, <pedagogy>, and <output>.
-    return extract_think_output(response)
+def extract_output(response_text):
+    return extract_think_output(response_text)
 
 
 def get_model_history() -> list:
@@ -112,6 +134,7 @@ def get_model_history() -> list:
         st.session_state["model_history"] = []
 
     converted = []
+
     for item in st.session_state.get("model_history", []):
         if isinstance(item, dict) and "role" in item and "content" in item:
             converted.append(item)
@@ -135,36 +158,38 @@ def safe_rerun():
         st.experimental_rerun()
 
 
-
-def append_log_row( row: dict):
+def append_log_row(row: dict):
     st.cache_data.clear()
-    df = conn.read(
-        worksheet="Choices",
-    )
-    df = pd.concat([df,pd.DataFrame([row])],ignore_index=True)
+    df = conn.read(worksheet="Choices")
+    df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
     st.cache_data.clear()
     df = conn.update(
-            worksheet="Choices",
-            data=df,
-        )
+        worksheet="Choices",
+        data=df,
+    )
     st.write(df.shape)
     return df
-    
 
 
-def run_pipelines(legacy,new, language: str, writing_type: str, topic: str, essay: str, prompt: str) -> dict:
+def run_pipelines(
+    legacy,
+    new,
+    language: str,
+    writing_type: str,
+    topic: str,
+    essay: str,
+    prompt: str,
+) -> dict:
     formatted_input = format_input(topic, essay, prompt)
     history_for_model = get_model_history()
 
-    legacy,new = format_system_prompt(legacy,new,language,writing_type)
-    # Pipeline 1: direct answer with hidden thinking/output tags.
+    legacy, new = format_system_prompt(legacy, new, language, writing_type)
+
     resp1 = response(legacy, history_for_model, formatted_input)
     think1, output1 = extract_output(resp1)
 
-    # Pipeline 2: pedagogy plan first, then student-facing answer.
-    resp_b1 = response(new, history_for_model, formatted_input)
-    think2, output2 = extract_output(resp_b1)
-
+    resp2 = response(new, history_for_model, formatted_input)
+    think2, output2 = extract_output(resp2)
 
     choices = [
         {
@@ -180,6 +205,7 @@ def run_pipelines(legacy,new, language: str, writing_type: str, topic: str, essa
             "thinking": think2,
         },
     ]
+
     random.shuffle(choices)
 
     return {
@@ -195,23 +221,21 @@ def run_pipelines(legacy,new, language: str, writing_type: str, topic: str, essa
     }
 
 
-def format_feedback_input(topic: str, essay: str) -> str:
-    return f"<topic>{topic}</topic>\n<essay>\n{essay}\n</essay>"
-
-
 def run_feedback(topic: str, essay: str) -> dict:
-    """Run the single FEEDBACK prompt with empty history and log-compatible fields."""
     formatted_input = format_feedback_input(topic, essay)
+
+    # FEEDBACK as system prompt and empty history.
     raw_response = response(FEEDBACK, [], formatted_input)
-    think, output = extract_think_output(raw_response)
+
+    thinking1, output1 = extract_think_output(raw_response)
 
     return {
         "topic": topic,
         "essay": essay,
         "formatted_input": formatted_input,
         "raw_response": raw_response,
-        "thinking1": think,
-        "output1": output,
+        "thinking1": thinking1,
+        "output1": output1,
     }
 
 
@@ -221,21 +245,26 @@ def reset_workspace():
     st.session_state["model_history"] = []
     st.session_state["interaction_count"] = 0
     st.session_state["pending_result"] = None
+
     st.session_state["feedback_result"] = None
+    st.session_state["feedback_logged"] = False
+    st.session_state["feedback_comment"] = ""
     st.session_state["app_page"] = "main"
+
     st.session_state["language"] = ""
     st.session_state["topic"] = ""
     st.session_state["essay"] = ""
 
 
+# --- Session state ---
 if "history" not in st.session_state:
-    st.session_state["history"] = []  # previous chosen tutor outputs, kept for compatibility
+    st.session_state["history"] = []
 
 if "chat_log" not in st.session_state:
-    st.session_state["chat_log"] = []  # visible chat turns: {"role": "user"|"assistant", "content": str}
+    st.session_state["chat_log"] = []
 
 if "model_history" not in st.session_state:
-    st.session_state["model_history"] = []  # messages passed back into the LLM calls
+    st.session_state["model_history"] = []
 
 if "interaction_count" not in st.session_state:
     st.session_state["interaction_count"] = 0
@@ -245,6 +274,12 @@ if "pending_result" not in st.session_state:
 
 if "feedback_result" not in st.session_state:
     st.session_state["feedback_result"] = None
+
+if "feedback_logged" not in st.session_state:
+    st.session_state["feedback_logged"] = False
+
+if "feedback_comment" not in st.session_state:
+    st.session_state["feedback_comment"] = ""
 
 if "app_page" not in st.session_state:
     st.session_state["app_page"] = "main"
@@ -385,6 +420,7 @@ st.markdown(
 )
 
 
+# --- Feedback page ---
 if st.session_state.get("app_page") == "feedback":
     result = st.session_state.get("feedback_result")
 
@@ -400,21 +436,70 @@ if st.session_state.get("app_page") == "feedback":
 
     if not result:
         st.warning("No feedback result is available yet.")
-    else:
-        st.markdown(
-            f'<div class="assistant-bubble"><strong>Feedback</strong><br>{result["output1"]}</div>',
-            unsafe_allow_html=True,
+        st.stop()
+
+    st.markdown(
+        f'<div class="assistant-bubble"><strong>Feedback</strong><br>{result["output1"]}</div>',
+        unsafe_allow_html=True,
+    )
+
+    st.markdown("### Comment on feedback")
+    st.markdown(
+        '<div class="small-muted">Write any comment you want to save with this feedback. It will be logged in the <code>choice</code> column.</div>',
+        unsafe_allow_html=True,
+    )
+
+    with st.form("feedback_comment_form"):
+        feedback_comment = st.text_area(
+            "Your comment",
+            key="feedback_comment",
+            height=120,
+            placeholder="Optional: comment on the usefulness, clarity, or quality of this feedback.",
         )
 
-        with st.expander("Developer details"):
-            st.markdown("**Formatted input sent to the LLM**")
-            st.code(result["formatted_input"], language="xml")
-            st.markdown("**Think part logged to Google Sheets**")
-            st.code(result["thinking1"] or "", language="text")
+        save_feedback_log = st.form_submit_button(
+            "Save feedback log",
+            use_container_width=True,
+            disabled=st.session_state.get("feedback_logged", False),
+        )
+
+    if save_feedback_log:
+        try:
+            row = {
+                "topic": result["topic"],
+                "essay": result["essay"],
+                "history": "Feedback",
+                "prompt": "Feedback",
+                "thinking1": result["thinking1"],
+                "thinking2": "",
+                "output1": result["output1"],
+                "output2": "",
+                "choice": feedback_comment,
+            }
+
+            append_log_row(row)
+            st.session_state["feedback_logged"] = True
+            st.success("Feedback, detailed rubric feedback, and your comment were saved.")
+
+        except Exception as exc:
+            st.error("The feedback log could not be saved.")
+            with st.expander("Error details"):
+                st.exception(exc)
+
+    if st.session_state.get("feedback_logged", False):
+        st.info("This feedback result has already been saved. Go back or restart to create a new one.")
+
+    with st.expander("Detailed rubric feedback"):
+        st.markdown("**Formatted input sent to the LLM**")
+        st.code(result["formatted_input"], language="xml")
+
+        st.markdown("**Think part logged to Google Sheets**")
+        st.code(result["thinking1"] or "", language="text")
 
     st.stop()
 
 
+# --- Main page ---
 st.markdown('<div class="app-title">Writing Tutor Workspace</div>', unsafe_allow_html=True)
 st.markdown(
     '<div class="app-subtitle">Write on the left. Chat with the tutor on the right. Choose the reply you prefer by clicking it.</div>',
@@ -431,10 +516,21 @@ with left_col:
         '<div class="panel-caption">Set the task, then draft and revise your essay here.</div>',
         unsafe_allow_html=True,
     )
-    language = st.text_input("Language", key="language", placeholder="In what Language are you writing?")
+
+    language = st.text_input(
+        "Language",
+        key="language",
+        placeholder="In what Language are you writing?",
+    )
+
     writing_type = st.selectbox("Type of writing", list(goals.keys()))
 
-    topic = st.text_input("Topic", key="topic", placeholder="What are you writing about?")
+    topic = st.text_input(
+        "Topic",
+        key="topic",
+        placeholder="What are you writing about?",
+    )
+
     essay = st.text_area(
         "Your essay",
         key="essay",
@@ -443,6 +539,7 @@ with left_col:
     )
 
     feedback_disabled = not essay.strip()
+
     if st.button(
         "Submit essay for overall feedback",
         disabled=feedback_disabled,
@@ -453,24 +550,15 @@ with left_col:
             with st.spinner("Generating overall feedback..."):
                 feedback_result = run_feedback(topic=topic, essay=essay)
 
-                row = {
-                    "topic": topic,
-                    "essay": essay,
-                    "history": "Feedback",
-                    "prompt": "Feedback",
-                    "thinking1": feedback_result["thinking1"],
-                    "thinking2": "",
-                    "output1": feedback_result["output1"],
-                    "output2": "",
-                    "choice": None,
-                }
-                append_log_row(row)
-
                 st.session_state["feedback_result"] = feedback_result
+                st.session_state["feedback_logged"] = False
+                st.session_state["feedback_comment"] = ""
                 st.session_state["app_page"] = "feedback"
+
             safe_rerun()
+
         except Exception as exc:
-            st.error("The overall feedback could not be generated or logged.")
+            st.error("The overall feedback could not be generated.")
             with st.expander("Developer error details"):
                 st.exception(exc)
 
@@ -478,8 +566,6 @@ with left_col:
         '<div class="small-muted">Tip: keep your essay draft here, not inside the chat prompt.</div>',
         unsafe_allow_html=True,
     )
-
-    st.markdown("</div>", unsafe_allow_html=True)
 
 
 # --- Right column: chatbot + response preference cards ---
@@ -490,7 +576,6 @@ with right_col:
         unsafe_allow_html=True,
     )
 
-
     if not st.session_state["chat_log"] and not st.session_state["pending_result"]:
         st.markdown(
             '<div class="empty-chat">No messages yet.<br>Ask the tutor for one small piece of help.</div>',
@@ -500,12 +585,14 @@ with right_col:
     for turn in st.session_state["chat_log"]:
         role_class = "user-bubble" if turn["role"] == "user" else "assistant-bubble"
         speaker = "You" if turn["role"] == "user" else "Tutor"
+
         st.markdown(
             f'<div class="{role_class}"><strong>{speaker}</strong><br>{turn["content"]}</div>',
             unsafe_allow_html=True,
         )
 
     pending = st.session_state["pending_result"]
+
     if pending:
         st.markdown(
             f'<div class="user-bubble"><strong>You</strong><br>{pending["prompt"]}</div>',
@@ -516,16 +603,22 @@ with right_col:
             unsafe_allow_html=True,
         )
 
-    st.markdown("</div>", unsafe_allow_html=True)
-
     if pending:
         for idx, choice in enumerate(pending["choices"]):
             button_label = choice["output"]
-            if st.button(button_label, key=f"choose_{idx}_{choice['id']}", use_container_width=True):
+
+            if st.button(
+                button_label,
+                key=f"choose_{idx}_{choice['id']}",
+                use_container_width=True,
+            ):
                 row = {
                     "topic": pending["topic"],
                     "essay": pending["essay"],
-                    "history": json.dumps(st.session_state["model_history"], ensure_ascii=False),
+                    "history": json.dumps(
+                        st.session_state["model_history"],
+                        ensure_ascii=False,
+                    ),
                     "prompt": pending["prompt"],
                     "thinking1": pending["thinking1"],
                     "thinking2": pending["thinking2"],
@@ -533,12 +626,18 @@ with right_col:
                     "output2": pending["output2"],
                     "choice": choice["choice"],
                 }
+
                 append_log_row(row)
 
-                st.session_state["chat_log"].append({"role": "user", "content": pending["prompt"]})
-                st.session_state["chat_log"].append({"role": "assistant", "content": choice["output"]})
+                st.session_state["chat_log"].append(
+                    {"role": "user", "content": pending["prompt"]}
+                )
+                st.session_state["chat_log"].append(
+                    {"role": "assistant", "content": choice["output"]}
+                )
 
                 st.session_state["history"].append(choice["output"])
+
                 st.session_state["model_history"].append(
                     {"role": "user", "content": pending["formatted_input"]}
                 )
@@ -548,6 +647,7 @@ with right_col:
 
                 st.session_state["interaction_count"] += 1
                 st.session_state["pending_result"] = None
+
                 safe_rerun()
 
         st.markdown(
@@ -562,6 +662,7 @@ with right_col:
             height=110,
             placeholder="Ask for feedback or tell the tutor what you are stuck on.",
         )
+
         submit = st.form_submit_button("Send", use_container_width=True)
 
     if submit:
@@ -572,14 +673,16 @@ with right_col:
                 with st.spinner("Preparing tutor replies..."):
                     st.session_state["pending_result"] = run_pipelines(
                         legacy=LEGACY,
-                        new = NEW,
+                        new=NEW,
                         language=language,
                         writing_type=writing_type,
                         topic=topic,
                         essay=essay,
                         prompt=prompt.strip(),
                     )
+
                 safe_rerun()
+
             except Exception as exc:
                 st.error(
                     "The tutor replies could not be generated. Check that your response(...) function is available and working."
@@ -588,6 +691,7 @@ with right_col:
                     st.exception(exc)
 
     col_restart, col_clear_pending = st.columns(2)
+
     with col_restart:
         if st.button("Restart", use_container_width=True):
             reset_workspace()
@@ -598,8 +702,5 @@ with right_col:
             st.session_state["pending_result"] = None
             safe_rerun()
 
-    st.markdown("</div>", unsafe_allow_html=True)
-
 
 st.caption(f"Interactions and overall feedback are saved to `{LOG_CSV}`.")
-
