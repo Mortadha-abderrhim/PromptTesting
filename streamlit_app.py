@@ -602,3 +602,4 @@ with right_col:
 
 
 st.caption(f"Interactions and overall feedback are saved to `{LOG_CSV}`.")
+
