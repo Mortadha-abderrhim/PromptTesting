@@ -10,6 +10,7 @@ import pandas as pd
 conn = st.connection("gsheets", type=GSheetsConnection)
 API_KEY = os.environ.get("API_KEY")
 import json
+import re
 
 conn = st.connection("gsheets", type=GSheetsConnection)
 
@@ -46,6 +47,8 @@ with open("LEGACY_PROMPT.md", "r", encoding="utf-8") as file:
 with open("NEW_PROMPT.md","r", encoding="utf-8") as file:
     NEW = file.read()
 
+with open("FEEDBACK_PROMPT.md","r", encoding="utf-8") as file:
+    FEEDBACK = file.read()
 
 LOG_CSV = "logs.csv"
 
@@ -72,16 +75,32 @@ def format_system_prompt(legacy, new, language,writing_type):
     new = new.replace("{language}",language).replace("{type}",writing_type).replace("{structure}",goals[writing_type])
     return legacy,new
 
+def extract_tagged_part(text: str, tag: str) -> str:
+    """Extract content from <tag>...</tag>. Return empty string when absent."""
+    match = re.search(rf"<{tag}\s*>(.*?)</{tag}>", text or "", flags=re.DOTALL | re.IGNORECASE)
+    return match.group(1).strip() if match else ""
+
+
+def extract_think_output(response_text: str) -> tuple[str, str]:
+    """Parse LLM responses that contain <think> and <output> sections."""
+    think = extract_tagged_part(response_text, "think")
+    output = extract_tagged_part(response_text, "output")
+
+    # Fallbacks for older prompts that used <pedagogy> or returned only plain text.
+    if not think:
+        think = extract_tagged_part(response_text, "pedagogy")
+    if not output:
+        output = response_text or ""
+        output = re.sub(r"<think\s*>.*?</think>", "", output, flags=re.DOTALL | re.IGNORECASE)
+        output = re.sub(r"<pedagogy\s*>.*?</pedagogy>", "", output, flags=re.DOTALL | re.IGNORECASE)
+        output = output.replace("<output>", "").replace("</output>", "").strip()
+
+    return think, output
+
+
 def extract_output(response):
-    if "<output>" in  response:
-        output = response.rsplit("<output>",1)[1]
-        pedagogy = response.rsplit("<output>",1)[0]
-    else:
-        output = response
-        pedagogy = ""
-    if "</output>" in response:
-        output = output.replace("</output>","")
-    return pedagogy, output
+    # Kept for the comparison pipelines, but now handles <think>, <pedagogy>, and <output>.
+    return extract_think_output(response)
 
 
 def get_model_history() -> list:
@@ -176,6 +195,39 @@ def run_pipelines(legacy,new, language: str, writing_type: str, topic: str, essa
     }
 
 
+def format_feedback_input(topic: str, essay: str) -> str:
+    return f"<topic>{topic}</topic>\n<essay>\n{essay}\n</essay>"
+
+
+def run_feedback(topic: str, essay: str) -> dict:
+    """Run the single FEEDBACK prompt with empty history and log-compatible fields."""
+    formatted_input = format_feedback_input(topic, essay)
+    raw_response = response(FEEDBACK, [], formatted_input)
+    think, output = extract_think_output(raw_response)
+
+    return {
+        "topic": topic,
+        "essay": essay,
+        "formatted_input": formatted_input,
+        "raw_response": raw_response,
+        "thinking1": think,
+        "output1": output,
+    }
+
+
+def reset_workspace():
+    st.session_state["history"] = []
+    st.session_state["chat_log"] = []
+    st.session_state["model_history"] = []
+    st.session_state["interaction_count"] = 0
+    st.session_state["pending_result"] = None
+    st.session_state["feedback_result"] = None
+    st.session_state["app_page"] = "main"
+    st.session_state["language"] = ""
+    st.session_state["topic"] = ""
+    st.session_state["essay"] = ""
+
+
 if "history" not in st.session_state:
     st.session_state["history"] = []  # previous chosen tutor outputs, kept for compatibility
 
@@ -190,6 +242,21 @@ if "interaction_count" not in st.session_state:
 
 if "pending_result" not in st.session_state:
     st.session_state["pending_result"] = None
+
+if "feedback_result" not in st.session_state:
+    st.session_state["feedback_result"] = None
+
+if "app_page" not in st.session_state:
+    st.session_state["app_page"] = "main"
+
+if "language" not in st.session_state:
+    st.session_state["language"] = ""
+
+if "topic" not in st.session_state:
+    st.session_state["topic"] = ""
+
+if "essay" not in st.session_state:
+    st.session_state["essay"] = ""
 
 
 # --- Styling ---
@@ -318,6 +385,36 @@ st.markdown(
 )
 
 
+if st.session_state.get("app_page") == "feedback":
+    result = st.session_state.get("feedback_result")
+
+    st.markdown('<div class="app-title">Overall Feedback</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="app-subtitle">This feedback was generated from the current topic and essay.</div>',
+        unsafe_allow_html=True,
+    )
+
+    if st.button("← Back to workspace"):
+        st.session_state["app_page"] = "main"
+        safe_rerun()
+
+    if not result:
+        st.warning("No feedback result is available yet.")
+    else:
+        st.markdown(
+            f'<div class="assistant-bubble"><strong>Feedback</strong><br>{result["output1"]}</div>',
+            unsafe_allow_html=True,
+        )
+
+        with st.expander("Developer details"):
+            st.markdown("**Formatted input sent to the LLM**")
+            st.code(result["formatted_input"], language="xml")
+            st.markdown("**Think part logged to Google Sheets**")
+            st.code(result["thinking1"] or "", language="text")
+
+    st.stop()
+
+
 st.markdown('<div class="app-title">Writing Tutor Workspace</div>', unsafe_allow_html=True)
 st.markdown(
     '<div class="app-subtitle">Write on the left. Chat with the tutor on the right. Choose the reply you prefer by clicking it.</div>',
@@ -334,21 +431,54 @@ with left_col:
         '<div class="panel-caption">Set the task, then draft and revise your essay here.</div>',
         unsafe_allow_html=True,
     )
-    language = st.text_input("Language", value="", placeholder="In what Language are you writing?")
+    language = st.text_input("Language", key="language", placeholder="In what Language are you writing?")
     writing_type = st.selectbox("Type of writing", list(goals.keys()))
 
-    topic = st.text_input("Topic", value="", placeholder="What are you writing about?")
+    topic = st.text_input("Topic", key="topic", placeholder="What are you writing about?")
     essay = st.text_area(
         "Your essay",
-        value="",
+        key="essay",
         height=560,
         placeholder="Write your essay here. Keep your tutor question in the chat box on the right.",
     )
+
+    feedback_disabled = not essay.strip()
+    if st.button(
+        "Submit essay for overall feedback",
+        disabled=feedback_disabled,
+        use_container_width=True,
+        type="primary",
+    ):
+        try:
+            with st.spinner("Generating overall feedback..."):
+                feedback_result = run_feedback(topic=topic, essay=essay)
+
+                row = {
+                    "topic": topic,
+                    "essay": essay,
+                    "history": "Feedback",
+                    "prompt": "Feedback",
+                    "thinking1": feedback_result["thinking1"],
+                    "thinking2": "",
+                    "output1": feedback_result["output1"],
+                    "output2": "",
+                    "choice": None,
+                }
+                append_log_row(row)
+
+                st.session_state["feedback_result"] = feedback_result
+                st.session_state["app_page"] = "feedback"
+            safe_rerun()
+        except Exception as exc:
+            st.error("The overall feedback could not be generated or logged.")
+            with st.expander("Developer error details"):
+                st.exception(exc)
 
     st.markdown(
         '<div class="small-muted">Tip: keep your essay draft here, not inside the chat prompt.</div>',
         unsafe_allow_html=True,
     )
+
     st.markdown("</div>", unsafe_allow_html=True)
 
 
@@ -460,11 +590,7 @@ with right_col:
     col_restart, col_clear_pending = st.columns(2)
     with col_restart:
         if st.button("Restart", use_container_width=True):
-            st.session_state["history"] = []
-            st.session_state["chat_log"] = []
-            st.session_state["model_history"] = []
-            st.session_state["interaction_count"] = 0
-            st.session_state["pending_result"] = None
+            reset_workspace()
             safe_rerun()
 
     with col_clear_pending:
@@ -475,4 +601,4 @@ with right_col:
     st.markdown("</div>", unsafe_allow_html=True)
 
 
-st.caption(f"Interactions saved to `{LOG_CSV}` after a tutor reply is selected.")
+st.caption(f"Interactions and overall feedback are saved to `{LOG_CSV}`.")
