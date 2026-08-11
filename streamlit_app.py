@@ -46,6 +46,7 @@ with open("NEW_PROMPT.md", "r", encoding="utf-8") as file:
 with open("FEEDBACK_PROMPT.md", "r", encoding="utf-8") as file:
     FEEDBACK = file.read()
 
+
 LOG_CSV = "logs.csv"
 
 
@@ -55,11 +56,13 @@ def response(system, history, formatted_input):
         "Authorization": f"Bearer {API_KEY}",
         "Content-Type": "application/json",
     }
+    if system is None:
+        messages =  [{"role": "user", "content": formatted_input}]
+    else:
+        messages = [{"role": "system", "content": system}] + history  + [{"role": "user", "content": formatted_input}]
     data = {
         "model": "gpt-oss-120b",
-        "messages": [{"role": "system", "content": system}]
-        + history
-        + [{"role": "user", "content": formatted_input}],
+        "messages": messages,
         "stream": False,
     }
     response = requests.post(url, headers=headers, json=data)
@@ -125,13 +128,16 @@ def extract_output(response_text):
     return extract_think_output(response_text)
 
 
-def get_model_history() -> list:
+
+
+def get_model_history(with_annotations = False) -> list:
     """
     Keep only previous chosen tutor turns in model history.
     Convert older string-only history safely if a user already has session data.
     """
     if "model_history" not in st.session_state:
         st.session_state["model_history"] = []
+        st.session_state["annotations"] = []
 
     converted = []
 
@@ -146,8 +152,20 @@ def get_model_history() -> list:
                 converted.append({"role": "assistant", "content": item["content"]})
             else:
                 converted.append({"role": "assistant", "content": str(item)})
-
     st.session_state["model_history"] = converted
+
+    if with_annotations:
+        dialogue = ""
+        if len(st.session_state.get("model_history", []))==0 or len(st.session_state.get("annotations",[]))==0:
+            return dialogue
+
+        for idx,val in enumerate(zip(st.session_state.get("annotations",[]),st.session_state.get("model_history",[]))):
+            act,turn = val[0],val[1]
+            role = "Tutor" if turn["role"]=="assistant" else "Student"
+            content = turn["content"]
+            dialogue += f"<turn{idx}>[speaker: {role}] {content}</turn><act= {act}>\n"
+        return dialogue
+
     return converted[:]
 
 
@@ -170,6 +188,23 @@ def append_log_row(row: dict):
     st.write(df.shape)
     return df
 
+def proxy_response(topic, essay, prompt):
+    with open("PROXY.json","r") as f:
+        proxy_prompts = json.load(f)
+    
+    current_essay = f"<topic>{topic}</topic>\n<essay>{essay}</essay>"
+    taxonomy = "\n".join(proxy_prompts["taxonomy_student"])
+    dialogue = get_model_history(with_annotations=True)
+    act = response(None,[],proxy_prompts["annotation"].format(TAXONOMY=taxonomy,ESSAY=current_essay,ANNOTATED_DIALOGUE=dialogue,NEXT_TURN=prompt))
+    st.session_state["model_history"].append({"role":"user","content":prompt})
+    st.session_state["annotations"].append(act)
+    dialogue = get_model_history(with_annotations=True)
+    taxonomy = "\n".join(proxy_prompts["taxonomy_teacher"])
+    next_act = response(None,[],proxy_prompts["prediction"].format(TAXONOMY=taxonomy,ESSAY=current_essay,ANNOTATED_DIALOGUE=dialogue))
+    next_turn = response(None,[],proxy_prompts["generation"].format(TAXONOMY=taxonomy,ESSAY=current_essay,ANNOTATED_DIALOGUE=dialogue,NEXT_DIALOGIC_ACT=next_act))
+    return next_act, next_turn
+
+
 
 def run_pipelines(
     legacy,
@@ -183,13 +218,13 @@ def run_pipelines(
     formatted_input = format_input(topic, essay, prompt)
     history_for_model = get_model_history()
 
+
     legacy, new = format_system_prompt(legacy, new, language, writing_type)
 
     resp1 = response(legacy, history_for_model, formatted_input)
     think1, output1 = extract_output(resp1)
 
-    resp2 = response(new, history_for_model, formatted_input)
-    think2, output2 = extract_output(resp2)
+    think2, output2 = proxy_response(topic, essay, prompt)
 
     choices = [
         {
@@ -243,6 +278,7 @@ def reset_workspace():
     st.session_state["history"] = []
     st.session_state["chat_log"] = []
     st.session_state["model_history"] = []
+    st.session_state["annotations"] = []
     st.session_state["interaction_count"] = 0
     st.session_state["pending_result"] = None
 
@@ -265,6 +301,7 @@ if "chat_log" not in st.session_state:
 
 if "model_history" not in st.session_state:
     st.session_state["model_history"] = []
+    st.session_state["annotations"] = []
 
 if "interaction_count" not in st.session_state:
     st.session_state["interaction_count"] = 0
@@ -644,7 +681,10 @@ with right_col:
                 st.session_state["model_history"].append(
                     {"role": "assistant", "content": choice["output"]}
                 )
-
+                if choice["choice"].endswith("1"):
+                    st.session_state["annotations"].append("None")
+                else:
+                    st.session_state["annotations"].append(pending["thinking2"])
                 st.session_state["interaction_count"] += 1
                 st.session_state["pending_result"] = None
 
