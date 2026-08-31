@@ -7,7 +7,7 @@ import pandas as pd
 import json
 import re
 
-"""conn = st.connection("gsheets", type=GSheetsConnection)"""
+conn = st.connection("gsheets", type=GSheetsConnection)
 API_KEY = os.environ.get("API_KEY")
 
 st.set_page_config(layout="wide", page_title="Compare LLM Pipelines")
@@ -163,7 +163,6 @@ def safe_rerun():
 
 
 def append_log_row(row: dict):
-    return "done"
     st.cache_data.clear()
     df = conn.read(worksheet="Choices")
     df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
