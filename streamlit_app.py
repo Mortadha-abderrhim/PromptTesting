@@ -188,7 +188,7 @@ def append_log_row(row: dict):
     st.write(df.shape)
     return df
 
-def proxy_response(topic, essay, prompt):
+def proxy_response(topic, essay, prompt,language):
     with open("PROXY.json","r") as f:
         proxy_prompts = json.load(f)
     
@@ -201,7 +201,7 @@ def proxy_response(topic, essay, prompt):
     dialogue = get_model_history(with_annotations=True)
     taxonomy = "\n".join(proxy_prompts["taxonomy_teacher"])
     next_act = response(None,[],proxy_prompts["prediction"].format(TAXONOMY=taxonomy,ESSAY=current_essay,ANNOTATED_DIALOGUE=dialogue))
-    next_turn = response(None,[],proxy_prompts["generation"].format(TAXONOMY=taxonomy,ESSAY=current_essay,ANNOTATED_DIALOGUE=dialogue,NEXT_DIALOGIC_ACT=next_act))
+    next_turn = response(None,[],proxy_prompts["generation"].format(TAXONOMY=taxonomy,ESSAY=current_essay,ANNOTATED_DIALOGUE=dialogue,NEXT_DIALOGIC_ACT=next_act,language=language))
     return next_act, next_turn
 
 
@@ -224,7 +224,7 @@ def run_pipelines(
     resp1 = response(legacy, history_for_model, formatted_input)
     think1, output1 = extract_output(resp1)
 
-    think2, output2 = proxy_response(topic, essay, prompt)
+    think2, output2 = proxy_response(topic, essay, prompt,language)
 
     choices = [
         {
