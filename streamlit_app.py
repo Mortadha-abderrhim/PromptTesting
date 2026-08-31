@@ -7,7 +7,7 @@ import pandas as pd
 import json
 import re
 
-conn = st.connection("gsheets", type=GSheetsConnection)
+"""conn = st.connection("gsheets", type=GSheetsConnection)"""
 API_KEY = os.environ.get("API_KEY")
 
 st.set_page_config(layout="wide", page_title="Compare LLM Pipelines")
@@ -139,20 +139,6 @@ def get_model_history(with_annotations = False) -> list:
         st.session_state["model_history"] = []
         st.session_state["annotations"] = []
 
-    converted = []
-
-    for item in st.session_state.get("model_history", []):
-        if isinstance(item, dict) and "role" in item and "content" in item:
-            converted.append(item)
-
-    # Backward compatibility with the old app, which stored chosen outputs only.
-    if not converted and st.session_state.get("history"):
-        for item in st.session_state.get("history", []):
-            if isinstance(item, dict) and "content" in item:
-                converted.append({"role": "assistant", "content": item["content"]})
-            else:
-                converted.append({"role": "assistant", "content": str(item)})
-    st.session_state["model_history"] = converted
 
     if with_annotations:
         dialogue = ""
@@ -166,7 +152,7 @@ def get_model_history(with_annotations = False) -> list:
             dialogue += f"<turn{idx}>[speaker: {role}] {content}</turn><act= {act}>\n"
         return dialogue
 
-    return converted[:]
+    return st.session_state["model_history"]
 
 
 def safe_rerun():
@@ -177,6 +163,7 @@ def safe_rerun():
 
 
 def append_log_row(row: dict):
+    return "done"
     st.cache_data.clear()
     df = conn.read(worksheet="Choices")
     df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
@@ -196,9 +183,10 @@ def proxy_response(topic, essay, prompt,language):
     taxonomy = "\n".join(proxy_prompts["taxonomy_student"])
     dialogue = get_model_history(with_annotations=True)
     act = response(None,[],proxy_prompts["annotation"].format(TAXONOMY=taxonomy,ESSAY=current_essay,ANNOTATED_DIALOGUE=dialogue,NEXT_TURN=prompt))
-    st.session_state["model_history"].append({"role":"user","content":prompt})
+    st.session_state["model_history"].append({"role":"user","content":format_input(topic, essay, prompt)})
     st.session_state["annotations"].append(act)
     dialogue = get_model_history(with_annotations=True)
+    print(dialogue)
     taxonomy = "\n".join(proxy_prompts["taxonomy_teacher"])
     next_act = response(None,[],proxy_prompts["prediction"].format(TAXONOMY=taxonomy,ESSAY=current_essay,ANNOTATED_DIALOGUE=dialogue))
     next_turn = response(None,[],proxy_prompts["generation"].format(TAXONOMY=taxonomy,ESSAY=current_essay,ANNOTATED_DIALOGUE=dialogue,NEXT_DIALOGIC_ACT=next_act,language=language))
@@ -675,9 +663,6 @@ with right_col:
 
                 st.session_state["history"].append(choice["output"])
 
-                st.session_state["model_history"].append(
-                    {"role": "user", "content": pending["formatted_input"]}
-                )
                 st.session_state["model_history"].append(
                     {"role": "assistant", "content": choice["output"]}
                 )
