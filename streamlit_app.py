@@ -424,6 +424,15 @@ st.markdown(
             font-weight: 520;
         }
 
+        div[data-testid="stButton"] > button p,
+        div[data-testid="stButton"] > button div,
+        div[data-testid="stButton"] > button span {
+            white-space: normal !important;
+            overflow: visible !important;
+            text-overflow: unset !important;
+            word-break: break-word;
+        }
+
         div[data-testid="stButton"] > button:hover {
             border-color: #84ADFF;
             box-shadow: 0 10px 28px rgba(16, 24, 40, 0.10);
