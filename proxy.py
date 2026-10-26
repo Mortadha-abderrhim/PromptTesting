@@ -31,8 +31,8 @@ class Proxy:
         self.PREDICTION_SYSTEM = config["prediction"]
         self.GENERATION_SYSTEM = config["generation"]
 
-        self.TEACHER_TAX = config["taxonomy_teacher"]
-        self.STUDENT_TAX = config["taxonomy_student"]
+        self.TEACHER_TAX = "\n".join([f"{k}: {v}" for k,v in config["taxonomy_teacher"].items()])
+        self.STUDENT_TAX = "\n".join([f"{k}: {v}" for k,v in config["taxonomy_student"].items()])
 
     
     def format_history(self,system,history,essay,language):
